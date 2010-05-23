@@ -1,0 +1,268 @@
+#!/usr/bin/env perl
+# vim: set filetype=perl:
+
+use FindBin;
+BEGIN { do "$FindBin::Bin/env" or die $@ }
+
+use warnings; 
+use strict;
+=head1 locallib-cpan - a utility script for locallibinated applications
+
+mostly stolen from hat BOBTFISH critter's github...
+(it just rolls a bundle of the smaller scripts together)
+
+you should have a Makefile.PL either in this dir or the parent,
+to determine where the local-lib5/ will be created
+
+=cut
+
+=head1 args
+
+$0 - do cpan'ish stuff for local-libified apps
+
+You can run
+ perldoc $0 
+for more info
+
+switches
+ --bootstrap            - instal the stuff you need to install stuff
+                        - done automatically if needed
+ --force @moudles       - these modules will be force installed
+ --install @modules     - these will not be forced (default) 
+ --shell                - start a cpan shell at the end
+
+examples:
+  $0 --bootstrap                            # --bootstrap is not optional when it's all you ask for
+  $0 Acme::Meow                             # --install is optional, might --bootstrap too
+  $0 Foo::Bar Foo::Bar::Driver::Baz         # install many modules
+  $0 --force Foo::Bar --install Bar::Baz    # you can --install after --force
+
+=cut
+
+use constant {
+    FORCE_IT        => 'force',
+    INSTALL_IT      => 'install', 
+    BOOTSTRAP_IT    => 'bootstrap',
+    CPAN_SHELL_IT   => 'shell',
+    PERLDOC_IT      => 'perldoc',
+    };
+
+# controll what happens 
+my ($debug, $do_bootstrap, $cpan_shell, $install, $cpan_force)
+ = ( 0    , 0            ,  0         ,         ,            );
+
+# hrm, perldoc doesn't really tie all that well into this script
+my $perldoc =0;
+
+# did we see --force (1) or --install (0) most recently?
+my $forcing = 0;
+
+# error messages for passed args  (array-ref) also a flag
+my $args_invalid;
+
+for(@ARGV) {
+    if (s/^--//){ # looks like switch
+        if ($_ eq FORCE_IT      ) { $forcing      =1;  next}
+        if ($_ eq INSTALL_IT    ) { $forcing      =0;  next}
+        if ($_ eq BOOTSTRAP_IT  ) { $do_bootstrap =1;  next}
+        if ($_ eq CPAN_SHELL_IT ) { $cpan_shell   =1;  next}
+        push @$args_invalid,
+            "--$_ is no a recognised switch";
+    }
+    else {
+        if (/^(?: \w|::|' )+$/x){
+            push @{ $forcing ?  $cpan_force : $install }, $_
+        }
+        else {
+            push @$args_invalid,
+                "$_ does not look like a valid moule name -_-";
+        }
+    }
+}
+
+push @$args_invalid, "You did not give any switches or module names, what would you like me to do?"
+    if not $do_bootstrap and not $cpan_shell and not $install and not $cpan_force;
+
+if ($args_invalid) {
+    # snag the pod block above ...
+    my $usage = join "",
+        map  { local $_=$_; s/\$0/$0/; $_                       }
+        grep { $_ ne "=head1 args\n" and $_ ne "=cut\n"           }
+        grep { $_ eq "=head1 args\n"... $_ eq "=cut\n" ? $_ : ()  }
+        do { local (@ARGV) = $0; <> } ;
+
+    die "$usage\n" . join "\n", @$args_invalid , ''
+}
+
+$do_bootstrap = 'forced'
+    if not -d ( get_lib_paths() )[0]; #-> $target, $lib
+
+do {# a debug message ... about what's going to happen 
+    local $, = ' ';
+    printf +( "$0 DEBUG bootstrap: %s, shell: %s.\n\tisntall: %s\n\tforce: %s\n", bool( $do_bootstrap, 'bootstrapping : '. $do_bootstrap ), bool( $cpan_shell, 'shell!' ), bool( $install, "install\'ing @{ $install || [] }" ), bool( $cpan_force, "force\'ing @{ $cpan_force || [] }" ), "\n");
+    sub bool {
+        $_[0] ? $_[1] || 'yes' : $_[2] || 'no'
+    }
+} if $debug;
+
+# hrm, lib not set up, so, set it up.  # eiter it was requseted, is neede anyway...
+if ($do_bootstrap){
+    warn "boot strap that shit!" if $debug;
+    bootstrap();
+}
+
+# do forces first 
+if ($cpan_force) { 
+    warn "force instaling: " . join (', ', @$cpan_force ) if $debug;
+    use CPAN;
+    install('force', @$cpan_force );
+}
+
+# do normal installs 
+if ($install) { 
+    warn "instaling: " . join (', ', @$install) if $debug;
+    use CPAN;
+    install( @$install );
+}
+
+# do cpan shell, if asked
+if ($cpan_shell) { 
+    warn "here's your cpan shell!";
+    use CPAN;
+    shell;
+}
+
+if ($perldoc) { 
+    BEGIN { $^W = 1 if $ENV{'PERLDOCDEBUG'} }
+    use Pod::Perldoc;
+    exit( Pod::Perldoc->run() );
+
+}
+
+sub get_lib_paths {
+
+    my $basedir;
+    if (-r "$FindBin::Bin/Makefile.PL") {
+        $basedir = $FindBin::Bin;
+    }
+    elsif (-r "$FindBin::Bin/../Makefile.PL") {
+        $basedir = "$FindBin::Bin/..";
+    }
+
+    $basedir ||= '';
+
+    my $target = "$basedir/local-lib5";
+    my $lib = "$target/lib/perl5";
+
+    return ($target, $lib );
+}
+
+
+
+=head2 TODO
+
+=over 4
+
+=item * self-setup mode where directory structure, Makefile, env and  exampel scripts are created
+
+=item * module-starter mode ... call module-starter and arrange to graft self in 
+
+=item * new catalyst app mode ... hack self into catalyst created scripts  ... might have to get catalyst into my own local lib first (curious
+
+=back
+
+=cut
+# {{{ bootstrap - script/bootstrap.pl 
+sub bootstrap {
+# This script installs an initial local::lib into your application directory
+# named local-lib5, which automatically turns on local::lib support by default.
+# Will then install Module::Install, and all of your dependencies into
+# the local lib directory created.
+
+use strict;
+use warnings;
+
+use lib;
+use FindBin;
+use CPAN;
+
+# Do not take no for an answer.  
+$ENV{CATALYST_LOCAL_LIB}=1;
+
+# Get the base paths and setup your %ENV 
+my ( $target, $lib ) = get_lib_paths();
+
+# Start installing stuff in the target dir
+$ENV{PERL_MM_OPT} = "INSTALL_BASE=$target";
+$ENV{PERL_MM_USE_DEFAULT} = "1";
+# And allow dependency checks to find it
+lib->import($lib);
+
+# Deal with the weird case that cpan has never been run before and
+# cpan wants to create a .cpan directory in /root or somewhere you
+# can't access
+
+local %CPAN::Config;
+require CPAN::HandleConfig;
+CPAN::HandleConfig->load();
+$CPAN::Config->{prefs_dir} = glob("~")."/.cpan/prefs";
+
+# First just force install local::lib to get it local to $target
+force(qw/install LWP::UserAgent/); # Need LWP for CPAN to work on Mac, as curl and
+                           # wget puke on the spaces in
+                           # ~/Library/Applicaton Support
+                           # Note - this needs to happen before File::HomeDir
+# Need to force File::HomeDir on the Mac
+if ($^O eq "darwin") {
+    force(qw/install Mac::Carbon/);
+}
+force(qw/install local::lib/);
+
+require local::lib; # Turn local::lib on
+local::lib->import( $target );
+
+# Become fully self contained
+$ENV{PERL5LIB} = ""; # If we used a local::lib to bootstrap, this kills it.
+
+# Sorry kane ;)
+$ENV{PERL_AUTOINSTALL_PREFER_CPAN}=1;
+$ENV{PERL_MM_OPT} .= " INSTALLMAN1DIR=none INSTALLMAN3DIR=none";
+
+require lib::core::only;
+local::lib->import( $target );
+
+# Force a re-install of local::lib here to get the dependencies for local::lib
+# It requires things which ensure we have an unfucked toolchain :)
+force(qw/install local::lib/);
+
+# Install the base modules
+install('Module::Install');
+install('YAML');
+install('CPAN');
+install('Module::Install::Catalyst');
+
+# setup distroprefs
+{
+    # Ok, god only knows what version of CPAN we started with, so lets nuke the
+    # config and try to reload it here for safety
+    local %CPAN::Config;
+    require CPAN::HandleConfig; # not installed till we installed CPAN (5.8.x)
+    CPAN::HandleConfig->load();
+    mkdir $CPAN::Config->{prefs_dir} unless -d $CPAN::Config->{prefs_dir};
+    open(my $prefs, ">", File::Spec->catfile($CPAN::Config->{prefs_dir},
+        "catalyst_local-lib-disable-mech-live.yml")) or die "Can't open prefs_dir: $!";
+
+    print $prefs qq{---
+comment: "WWW-Mechanize regularly fails its live tests, turn them off."
+match:
+  distribution: "^PETDANCE/WWW-Mechanize-1.\\d+\\.tar\\.gz"
+patches:
+  - "BOBTFISH/WWW-Mechanize-1.XX-BOBTFISH-01_notests.patch.gz"
+};
+
+    close($prefs);
+}
+
+print "local::lib setup, type perl Makefile.PL && make installdeps to install dependencies";
+
+} # }}}
