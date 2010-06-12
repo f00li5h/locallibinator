@@ -112,10 +112,10 @@ if ($do_bootstrap){
 }
 
 # do forces first 
-if ($cpan_force) { 
+if ($cpan_force) {
     warn "force instaling: " . join (', ', @$cpan_force ) if $debug;
-    use CPAN;
-    install('force', @$cpan_force );
+    use CPAN qw[ install force ];
+    force('install', @$cpan_force );
 }
 
 # do normal installs 
